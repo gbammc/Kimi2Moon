@@ -17,12 +17,27 @@ from typing import Optional, AsyncGenerator, List, Dict, Any, Union
 from datetime import datetime
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
 from .cli_wrapper import kimi_cli
+
+
+# ============== 日志设置 ==============
+import logging
+
+# 设置日志
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('/Users/alvinzhu/GoogleDrive/Code/AI/KimAPI/logs/server.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 # ============== 配置 ==============
@@ -37,9 +52,33 @@ AVAILABLE_MODELS = [
 
 # ============== 数据模型 ==============
 
+class ContentItem(BaseModel):
+    type: str = Field(default="text", description="内容类型: text, image_url, etc.")
+    text: Optional[str] = Field(None, description="文本内容")
+    image_url: Optional[Dict[str, str]] = Field(None, description="图片URL信息")
+
+
 class Message(BaseModel):
     role: str = Field(..., description="消息角色: system, user, assistant")
-    content: str = Field(..., description="消息内容")
+    content: Union[str, List[ContentItem], List[Dict[str, Any]]] = Field(..., description="消息内容（字符串或数组格式）")
+    
+    def get_text_content(self) -> str:
+        """将 content 转换为纯文本字符串"""
+        if isinstance(self.content, str):
+            return self.content
+        
+        # 处理数组格式
+        texts = []
+        for item in self.content:
+            if isinstance(item, dict):
+                if item.get("type") == "text" and "text" in item:
+                    texts.append(item["text"])
+                elif "text" in item:
+                    texts.append(item["text"])
+            elif isinstance(item, ContentItem):
+                if item.text:
+                    texts.append(item.text)
+        return "\n".join(texts)
 
 
 class ChatCompletionRequest(BaseModel):
@@ -49,9 +88,11 @@ class ChatCompletionRequest(BaseModel):
     top_p: Optional[float] = Field(1.0, ge=0, le=1)
     max_tokens: Optional[int] = Field(None, ge=1)
     stream: Optional[bool] = Field(False)
+    stream_options: Optional[Dict[str, Any]] = Field(None)
     stop: Optional[Union[str, List[str]]] = Field(None)
     presence_penalty: Optional[float] = Field(0, ge=-2, le=2)
     frequency_penalty: Optional[float] = Field(0, ge=-2, le=2)
+    user: Optional[str] = Field(None)
 
 
 class ChatCompletionChoice(BaseModel):
@@ -59,6 +100,8 @@ class ChatCompletionChoice(BaseModel):
     message: Optional[Dict[str, Any]] = None
     delta: Optional[Dict[str, Any]] = None
     finish_reason: Optional[str] = None
+    
+    model_config = {"exclude_none": True}
 
 
 class Usage(BaseModel):
@@ -140,6 +183,20 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """记录所有请求和响应"""
+    logger.info(f"=== REQUEST === {request.method} {request.url.path}")
+    
+    # 处理请求
+    response = await call_next(request)
+    
+    # 记录响应状态
+    logger.info(f"=== RESPONSE === Status: {response.status_code}")
+    
+    return response
+
+
 # ============== API 端点 ==============
 
 @app.get("/")
@@ -193,14 +250,18 @@ async def list_models():
     return ModelsResponse(data=models)
 
 
-@app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
+@app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     """
     聊天补全接口
     
     通过调用 kimi CLI 实现
     """
+    logger.info(f"ChatCompletion request: model={request.model}, stream={request.stream}")
+    logger.info(f"Messages: {[{'role': m.role, 'content_type': type(m.content).__name__} for m in request.messages]}")
+    
     if not kimi_cli.is_available():
+        logger.error("Kimi CLI not available")
         raise HTTPException(
             status_code=503,
             detail={
@@ -212,6 +273,7 @@ async def chat_completions(request: ChatCompletionRequest):
     
     auth_status = kimi_cli.check_auth()
     if not auth_status.get("authenticated"):
+        logger.error("Kimi CLI not authenticated")
         raise HTTPException(
             status_code=401,
             detail={
@@ -223,16 +285,21 @@ async def chat_completions(request: ChatCompletionRequest):
     
     try:
         if request.stream:
+            logger.info("Using streaming response")
             # 流式响应
             return StreamingResponse(
                 stream_chat_completion(request),
                 media_type="text/event-stream"
             )
         else:
+            logger.info("Using non-streaming response")
             # 非流式响应
-            return await non_stream_chat_completion(request)
+            result = await non_stream_chat_completion(request)
+            logger.info(f"Response: {json.dumps(result, ensure_ascii=False)[:200]}...")
+            return result
     
     except Exception as e:
+        logger.exception("Error in chat_completions")
         raise HTTPException(
             status_code=500,
             detail={
@@ -243,12 +310,12 @@ async def chat_completions(request: ChatCompletionRequest):
         )
 
 
-async def non_stream_chat_completion(request: ChatCompletionRequest) -> ChatCompletionResponse:
+async def non_stream_chat_completion(request: ChatCompletionRequest) -> Dict[str, Any]:
     """非流式聊天补全"""
     # 调用 kimi CLI
     output = ""
     async for chunk in kimi_cli.chat_completion(
-        messages=[m.model_dump() for m in request.messages],
+        messages=[{"role": m.role, "content": m.get_text_content()} for m in request.messages],
         model=request.model,
         stream=False,
         temperature=request.temperature
@@ -256,31 +323,31 @@ async def non_stream_chat_completion(request: ChatCompletionRequest) -> ChatComp
         output += chunk
     
     # 估算 token
-    prompt_text = "\n".join(m.content for m in request.messages)
+    prompt_text = "\n".join(m.get_text_content() for m in request.messages)
     prompt_tokens = estimate_tokens(prompt_text)
     completion_tokens = estimate_tokens(output)
     
-    return ChatCompletionResponse(
-        id=generate_id(),
-        object="chat.completion",
-        created=now_timestamp(),
-        model=request.model,
-        choices=[
-            ChatCompletionChoice(
-                index=0,
-                message={
+    return {
+        "id": generate_id(),
+        "object": "chat.completion",
+        "created": now_timestamp(),
+        "model": request.model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
                     "role": "assistant",
                     "content": output.strip()
                 },
-                finish_reason="stop"
-            )
+                "finish_reason": "stop"
+            }
         ],
-        usage=Usage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens
-        )
-    )
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens
+        }
+    }
 
 
 async def stream_chat_completion(request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
@@ -306,7 +373,7 @@ async def stream_chat_completion(request: ChatCompletionRequest) -> AsyncGenerat
     # 注意：kimi CLI 本身不支持真正的流式，这里模拟流式效果
     output = ""
     async for chunk in kimi_cli.chat_completion(
-        messages=[m.model_dump() for m in request.messages],
+        messages=[{"role": m.role, "content": m.get_text_content()} for m in request.messages],
         model=request.model,
         stream=False
     ):
@@ -335,7 +402,7 @@ async def stream_chat_completion(request: ChatCompletionRequest) -> AsyncGenerat
         # 小延迟模拟流式效果
         await asyncio.sleep(0.01)
     
-    # 发送结束消息
+    # 发送结束消息 - Xcode 期望 delta 是对象而不是 null
     end_chunk = {
         "id": chunk_id,
         "object": "chat.completion.chunk",

@@ -20,12 +20,13 @@ def parse_kimi_output(output: str) -> Dict[str, Any]:
     }
     
     # 使用正则表达式查找所有 TextPart
-    # TextPart 可能跨越多行
-    text_pattern = r"TextPart\(\s*type='text',\s*text='((?:[^']|\\')*?)'\s*\)"
+    # TextPart 可能跨越多行，可能使用单引号或双引号
+    text_pattern = r'TextPart\([^)]*type=[\'"]text[\'"][^)]*text=([\'"])((?:[^\1]|\\.)*?)\1'
     for match in re.finditer(text_pattern, output, re.DOTALL):
-        text = match.group(1)
+        text = match.group(2)
         # 处理转义
         text = text.replace("\\'", "'")
+        text = text.replace('\\"', '"')
         text = text.replace('\\n', '\n')
         text = text.replace('\\t', '\t')
         text = text.replace('\\\\', '\\')
