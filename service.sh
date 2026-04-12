@@ -1,12 +1,11 @@
 #!/bin/bash
-# Kimi2Moon launchd 服务管理脚本 (macOS)
+# Kimi2Moon 服务管理脚本 (无 launchctl 版本)
 
-set -euo pipefail
+set -uo pipefail
 
 LABEL="com.kimi2moon.service"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLIST_DIR="$HOME/Library/LaunchAgents"
-PLIST_FILE="$PLIST_DIR/$LABEL.plist"
+PID_FILE="$PROJECT_DIR/.service.pid"
 LOG_DIR="$PROJECT_DIR/logs"
 OUT_LOG="$LOG_DIR/service.out.log"
 ERR_LOG="$LOG_DIR/service.err.log"
@@ -22,15 +21,12 @@ print_help() {
 用法: ./service.sh <command>
 
 命令:
-  install     生成 LaunchAgent 配置文件
-  enable      安装并启用服务（开机自启 + 立即启动）
-  disable     停止并禁用服务（保留配置）
-  start       启动服务
+  start       启动服务（后台运行）
   stop        停止服务
   restart     重启服务
   status      查看服务状态
   logs        查看服务日志（持续输出）
-  uninstall   卸载服务并删除配置
+  run         前台运行（调试模式）
 
 可选环境变量:
   HOST, PORT, DEFAULT_MODEL, DEBUG
@@ -38,7 +34,6 @@ EOF
 }
 
 ensure_dirs() {
-    mkdir -p "$PLIST_DIR"
     mkdir -p "$LOG_DIR"
 }
 
@@ -63,125 +58,172 @@ ensure_deps() {
     fi
 }
 
-create_plist() {
+is_running() {
+    if [[ -f "$PID_FILE" ]]; then
+        local pid
+        pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_pid() {
+    cat "$PID_FILE" 2>/dev/null || echo ""
+}
+
+cmd_start() {
+    ensure_deps
     ensure_dirs
-    local python_bin
-    python_bin="$(resolve_python)"
-
-    cat > "$PLIST_FILE" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>$LABEL</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>$python_bin</string>
-        <string>-m</string>
-        <string>kimi_code_proxy</string>
-    </array>
-
-    <key>WorkingDirectory</key>
-    <string>$PROJECT_DIR</string>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HOST</key>
-        <string>$HOST</string>
-        <key>PORT</key>
-        <string>$PORT</string>
-        <key>DEFAULT_MODEL</key>
-        <string>$DEFAULT_MODEL</string>
-        <key>DEBUG</key>
-        <string>$DEBUG</string>
-    </dict>
-
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-
-    <key>StandardOutPath</key>
-    <string>$OUT_LOG</string>
-    <key>StandardErrorPath</key>
-    <string>$ERR_LOG</string>
-</dict>
-</plist>
-EOF
-    echo "已生成配置: $PLIST_FILE"
+    
+    if is_running; then
+        echo "服务已在运行中 (PID: $(get_pid))"
+        return 0
+    fi
+    
+    echo "正在启动 Kimi2Moon 服务..."
+    
+    # 清空旧日志
+    > "$OUT_LOG"
+    > "$ERR_LOG"
+    
+    # 后台启动服务
+    (
+        cd "$PROJECT_DIR"
+        export PYTHONPATH="$PROJECT_DIR"
+        export HOST="$HOST"
+        export PORT="$PORT"
+        export DEFAULT_MODEL="$DEFAULT_MODEL"
+        export DEBUG="$DEBUG"
+        
+        exec ./venv/bin/python3 -m kimi_code_proxy >> "$OUT_LOG" 2>> "$ERR_LOG"
+    ) &
+    
+    local pid=$!
+    echo $pid > "$PID_FILE"
+    
+    # 等待服务启动
+    sleep 3
+    
+    if is_running; then
+        echo "✅ 服务已启动 (PID: $pid)"
+        echo "   API 地址: http://$HOST:$PORT"
+        echo "   日志文件: $OUT_LOG, $ERR_LOG"
+    else
+        echo "❌ 服务启动失败，请检查日志: $ERR_LOG"
+        rm -f "$PID_FILE"
+        return 1
+    fi
 }
 
-load_service() {
-    launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$(id -u)" "$PLIST_FILE"
-    launchctl enable "gui/$(id -u)/$LABEL"
-    launchctl kickstart -k "gui/$(id -u)/$LABEL"
+cmd_stop() {
+    if ! is_running; then
+        echo "服务未运行"
+        rm -f "$PID_FILE"
+        return 0
+    fi
+    
+    local pid
+    pid=$(get_pid)
+    echo "正在停止服务 (PID: $pid)..."
+    
+    # 先尝试优雅终止
+    kill "$pid" 2>/dev/null || true
+    
+    # 等待最多 5 秒
+    local count=0
+    while is_running && [[ $count -lt 5 ]]; do
+        sleep 1
+        ((count++))
+    done
+    
+    # 强制终止
+    if is_running; then
+        echo "强制终止服务..."
+        kill -9 "$pid" 2>/dev/null || true
+        sleep 1
+    fi
+    
+    rm -f "$PID_FILE"
+    echo "✅ 服务已停止"
 }
 
-unload_service() {
-    launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
-    launchctl disable "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
+cmd_run() {
+    # 前台运行（调试用）
+    ensure_deps
+    ensure_dirs
+    
+    echo "前台运行 Kimi2Moon 服务..."
+    echo "按 Ctrl+C 停止"
+    
+    cd "$PROJECT_DIR"
+    export PYTHONPATH="$PROJECT_DIR"
+    export HOST="$HOST"
+    export PORT="$PORT"
+    export DEFAULT_MODEL="$DEFAULT_MODEL"
+    export DEBUG="$DEBUG"
+    
+    ./venv/bin/python3 -m kimi_code_proxy
 }
 
+cmd_status() {
+    if is_running; then
+        local pid
+        pid=$(get_pid)
+        echo "✅ 服务运行中 (PID: $pid)"
+        echo "   API 地址: http://$HOST:$PORT"
+        
+        # 显示进程信息
+        ps -p "$pid" -o pid,ppid,%cpu,%mem,etime,command 2>/dev/null || true
+        
+        # 显示端口监听
+        echo ""
+        echo "端口监听状态:"
+        lsof -Pi :"$PORT" -sTCP:LISTEN 2>/dev/null || echo "  无法获取端口信息"
+    else
+        echo "❌ 服务未运行"
+        rm -f "$PID_FILE"
+        return 1
+    fi
+}
+
+cmd_logs() {
+    ensure_dirs
+    touch "$OUT_LOG" "$ERR_LOG"
+    echo "正在监控日志 (按 Ctrl+C 退出)..."
+    echo "输出日志: $OUT_LOG"
+    echo "错误日志: $ERR_LOG"
+    echo ""
+    tail -f "$OUT_LOG" "$ERR_LOG"
+}
+
+cmd_restart() {
+    cmd_stop
+    sleep 1
+    cmd_start
+}
+
+# 主命令处理
 cmd="${1:-}"
 case "$cmd" in
-    install)
-        ensure_deps
-        create_plist
-        ;;
-    enable)
-        ensure_deps
-        create_plist
-        load_service
-        echo "服务已启用并启动: $LABEL"
-        ;;
-    disable)
-        unload_service
-        echo "服务已禁用并停止: $LABEL"
-        ;;
     start)
-        if [[ ! -f "$PLIST_FILE" ]]; then
-            echo "未找到配置文件，先执行: ./service.sh install"
-            exit 1
-        fi
-        load_service
-        echo "服务已启动: $LABEL"
+        cmd_start
         ;;
     stop)
-        unload_service
-        echo "服务已停止: $LABEL"
+        cmd_stop
         ;;
     restart)
-        if [[ ! -f "$PLIST_FILE" ]]; then
-            echo "未找到配置文件，先执行: ./service.sh install"
-            exit 1
-        fi
-        unload_service
-        load_service
-        echo "服务已重启: $LABEL"
+        cmd_restart
         ;;
     status)
-        if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
-            echo "服务运行中: $LABEL"
-            launchctl print "gui/$(id -u)/$LABEL" | rg "state =|pid =|last exit code =|path ="
-        else
-            echo "服务未运行: $LABEL"
-            exit 1
-        fi
+        cmd_status
         ;;
     logs)
-        ensure_dirs
-        touch "$OUT_LOG" "$ERR_LOG"
-        echo "输出日志: $OUT_LOG"
-        echo "错误日志: $ERR_LOG"
-        tail -f "$OUT_LOG" "$ERR_LOG"
+        cmd_logs
         ;;
-    uninstall)
-        unload_service
-        rm -f "$PLIST_FILE"
-        echo "服务配置已删除: $PLIST_FILE"
+    run)
+        cmd_run
         ;;
     *)
         print_help

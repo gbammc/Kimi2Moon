@@ -5,7 +5,7 @@ Kimi2Moon API Proxy Server (CLI 版本)
 
 使用方法:
 1. 确保已安装并登录 Kimi Code CLI
-2. 运行服务器: python -m kimi_code_proxy.main_v2
+2. 运行服务器: python -m kimi_code_proxy.main
 3. 使用 OpenAI 客户端连接: base_url="http://localhost:8000/v1"
 """
 
@@ -16,6 +16,7 @@ import asyncio
 from typing import Optional, AsyncGenerator, List, Dict, Any, Union
 from datetime import datetime
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -28,13 +29,16 @@ from .cli_wrapper import kimi_cli
 # ============== 日志设置 ==============
 import logging
 
-# 设置日志
+# 确保日志目录存在
+log_dir = Path(__file__).parent.parent / "logs"
+log_dir.mkdir(exist_ok=True)
+
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('/Users/alvinzhu/GoogleDrive/Code/AI/KimAPI/logs/server.log')
+        logging.FileHandler(log_dir / 'server.log')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -167,7 +171,7 @@ async def lifespan(app: FastAPI):
         
         auth_status = kimi_cli.check_auth()
         if auth_status.get("authenticated"):
-            print(f"✅ 已登录: {auth_status.get('user', 'Unknown')}")
+            print(f"✅ 已登录")
         else:
             print(f"⚠️  未登录: {auth_status.get('error', '请运行 kimi --login')}")
     
@@ -178,7 +182,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kimi2Moon (CLI)",
     description="通过 CLI 调用 Kimi Code 的 OpenAI 兼容代理",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan
 )
 
@@ -204,12 +208,12 @@ async def root():
     """根路径 - 服务信息"""
     return {
         "name": "Kimi2Moon (CLI)",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "description": "通过 CLI 调用 Kimi Code 的 OpenAI 兼容代理",
         "note": "此代理通过调用 kimi CLI 命令使用 Kimi Code",
         "endpoints": {
             "models": "/v1/models",
-            "chat_completions": "/v1/chat/completions"
+            "chat_completions": "/v1/chat/completions",
         },
         "documentation": "/docs",
         "kimi_cli_available": kimi_cli.is_available(),
@@ -251,12 +255,14 @@ async def list_models():
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+async def chat_completions(request: ChatCompletionRequest, http_request: Request):
     """
     聊天补全接口
     
     通过调用 kimi CLI 实现
     """
+    request_id = generate_id()
+    
     logger.info(f"ChatCompletion request: model={request.model}, stream={request.stream}")
     logger.info(f"Messages: {[{'role': m.role, 'content_type': type(m.content).__name__} for m in request.messages]}")
     
@@ -288,13 +294,13 @@ async def chat_completions(request: ChatCompletionRequest):
             logger.info("Using streaming response")
             # 流式响应
             return StreamingResponse(
-                stream_chat_completion(request),
+                stream_chat_completion(request, request_id),
                 media_type="text/event-stream"
             )
         else:
             logger.info("Using non-streaming response")
             # 非流式响应
-            result = await non_stream_chat_completion(request)
+            result = await non_stream_chat_completion(request, request_id)
             logger.info(f"Response: {json.dumps(result, ensure_ascii=False)[:200]}...")
             return result
     
@@ -310,7 +316,7 @@ async def chat_completions(request: ChatCompletionRequest):
         )
 
 
-async def non_stream_chat_completion(request: ChatCompletionRequest) -> Dict[str, Any]:
+async def non_stream_chat_completion(request: ChatCompletionRequest, request_id: str) -> Dict[str, Any]:
     """非流式聊天补全"""
     # 调用 kimi CLI
     output = ""
@@ -328,7 +334,7 @@ async def non_stream_chat_completion(request: ChatCompletionRequest) -> Dict[str
     completion_tokens = estimate_tokens(output)
     
     return {
-        "id": generate_id(),
+        "id": request_id,
         "object": "chat.completion",
         "created": now_timestamp(),
         "model": request.model,
@@ -350,9 +356,9 @@ async def non_stream_chat_completion(request: ChatCompletionRequest) -> Dict[str
     }
 
 
-async def stream_chat_completion(request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
+async def stream_chat_completion(request: ChatCompletionRequest, request_id: str) -> AsyncGenerator[str, None]:
     """流式聊天补全（模拟）"""
-    chunk_id = generate_id()
+    chunk_id = request_id
     created = now_timestamp()
     
     # 发送开始消息
@@ -379,12 +385,18 @@ async def stream_chat_completion(request: ChatCompletionRequest) -> AsyncGenerat
     ):
         output += chunk
     
+    # 估算 token
+    prompt_text = "\n".join(m.get_text_content() for m in request.messages)
+    prompt_tokens = estimate_tokens(prompt_text)
+    
     # 模拟流式输出（每 10 个字符发送一次）
     content = output.strip()
     chunk_size = 10
+    completion_tokens = 0
     
     for i in range(0, len(content), chunk_size):
         text_chunk = content[i:i+chunk_size]
+        completion_tokens += estimate_tokens(text_chunk)
         
         delta_chunk = {
             "id": chunk_id,
@@ -402,7 +414,7 @@ async def stream_chat_completion(request: ChatCompletionRequest) -> AsyncGenerat
         # 小延迟模拟流式效果
         await asyncio.sleep(0.01)
     
-    # 发送结束消息 - Xcode 期望 delta 是对象而不是 null
+    # 发送结束消息
     end_chunk = {
         "id": chunk_id,
         "object": "chat.completion.chunk",
@@ -429,7 +441,7 @@ async def health_check():
         "kimi_cli_available": kimi_cli.is_available(),
         "kimi_cli_version": kimi_cli.get_version(),
         "kimi_authenticated": auth_status.get("authenticated", False),
-        "kimi_user": auth_status.get("user")
+        "kimi_user": auth_status.get("user"),
     }
 
 
@@ -442,7 +454,7 @@ def main():
     
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
-║            🌙 Kimi2Moon Server (CLI 版本) 🌙                ║
+║            🌙 Kimi2Moon Server (CLI) 🌙                     ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  注意: 此代理通过调用 kimi CLI 命令使用 Kimi Code            ║
 ║  请确保已安装 Kimi Code CLI 并登录                           ║

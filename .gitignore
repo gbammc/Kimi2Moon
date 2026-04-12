@@ -23,3 +23,8 @@ logs/
 .idea/
 .vscode/
 
+# Temporary files
+*.pid
+start_*.sh
+pyproject.toml
+
