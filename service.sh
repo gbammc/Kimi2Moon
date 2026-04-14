@@ -73,6 +73,19 @@ get_pid() {
     cat "$PID_FILE" 2>/dev/null || echo ""
 }
 
+get_pid_by_port() {
+    # 通过端口查找进程 PID
+    local pid=""
+    if command -v lsof &>/dev/null; then
+        pid=$(lsof -ti tcp:"$PORT" 2>/dev/null | head -n1)
+    elif command -v ss &>/dev/null; then
+        pid=$(ss -ltnp "sport = :$PORT" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -n1)
+    elif command -v netstat &>/dev/null; then
+        pid=$(netstat -ltnp 2>/dev/null | grep ":$PORT " | awk '{print $7}' | cut -d'/' -f1 | head -n1)
+    fi
+    echo "$pid"
+}
+
 cmd_start() {
     ensure_deps
     ensure_dirs
@@ -118,14 +131,27 @@ cmd_start() {
 }
 
 cmd_stop() {
-    if ! is_running; then
+    local pid=""
+    
+    # 优先从 PID 文件获取
+    if is_running; then
+        pid=$(get_pid)
+    fi
+    
+    # 如果 PID 文件失效，尝试通过端口查找
+    if [[ -z "$pid" ]]; then
+        pid=$(get_pid_by_port)
+        if [[ -n "$pid" ]]; then
+            echo "通过端口 $PORT 找到服务进程 (PID: $pid)"
+        fi
+    fi
+    
+    if [[ -z "$pid" ]]; then
         echo "服务未运行"
         rm -f "$PID_FILE"
         return 0
     fi
     
-    local pid
-    pid=$(get_pid)
     echo "正在停止服务 (PID: $pid)..."
     
     # 先尝试优雅终止
@@ -133,13 +159,13 @@ cmd_stop() {
     
     # 等待最多 5 秒
     local count=0
-    while is_running && [[ $count -lt 5 ]]; do
+    while kill -0 "$pid" 2>/dev/null && [[ $count -lt 5 ]]; do
         sleep 1
         ((count++))
     done
     
     # 强制终止
-    if is_running; then
+    if kill -0 "$pid" 2>/dev/null; then
         echo "强制终止服务..."
         kill -9 "$pid" 2>/dev/null || true
         sleep 1
@@ -168,9 +194,17 @@ cmd_run() {
 }
 
 cmd_status() {
+    local pid=""
+    
     if is_running; then
-        local pid
         pid=$(get_pid)
+    fi
+    
+    if [[ -z "$pid" ]]; then
+        pid=$(get_pid_by_port)
+    fi
+    
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
         echo "✅ 服务运行中 (PID: $pid)"
         echo "   API 地址: http://$HOST:$PORT"
         

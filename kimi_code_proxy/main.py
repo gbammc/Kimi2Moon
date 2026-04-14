@@ -19,7 +19,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -186,6 +187,23 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# 挂载静态文件
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# 加载首页 HTML
+_index_html: Optional[str] = None
+def get_index_html() -> str:
+    global _index_html
+    if _index_html is None:
+        index_path = static_dir / "index.html"
+        if index_path.exists():
+            _index_html = index_path.read_text(encoding="utf-8")
+        else:
+            _index_html = ""
+    return _index_html
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -203,14 +221,35 @@ async def log_requests(request: Request, call_next):
 
 # ============== API 端点 ==============
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """根路径 - 服务信息"""
+    """根路径 - Web 状态面板"""
+    html = get_index_html()
+    if html:
+        return HTMLResponse(content=html)
+    # fallback
     return {
         "name": "Kimi2Moon (CLI)",
         "version": "2.1.0",
         "description": "通过 CLI 调用 Kimi Code 的 OpenAI 兼容代理",
         "note": "此代理通过调用 kimi CLI 命令使用 Kimi Code",
+        "endpoints": {
+            "models": "/v1/models",
+            "chat_completions": "/v1/chat/completions",
+        },
+        "documentation": "/docs",
+        "kimi_cli_available": kimi_cli.is_available(),
+        "kimi_cli_version": kimi_cli.get_version(),
+    }
+
+
+@app.get("/api/info")
+async def api_info():
+    """服务信息 JSON"""
+    return {
+        "name": "Kimi2Moon (CLI)",
+        "version": "2.1.0",
+        "description": "通过 CLI 调用 Kimi Code 的 OpenAI 兼容代理",
         "endpoints": {
             "models": "/v1/models",
             "chat_completions": "/v1/chat/completions",

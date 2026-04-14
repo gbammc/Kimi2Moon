@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kimi2Moon — 本地 OpenAI 兼容代理</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .code-block { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; }
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-50 to-slate-100 min-h-screen text-slate-800">
+    <div class="max-w-3xl mx-auto px-6 py-12">
+        <!-- Header -->
+        <div class="text-center mb-10 fade-in">
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-indigo-600 text-white text-3xl shadow-lg mb-4">🌙</div>
+            <h1 class="text-3xl font-bold tracking-tight mb-2">Kimi2Moon</h1>
+            <p class="text-slate-500">把本地 Kimi Code CLI 变成 OpenAI 兼容接口</p>
+        </div>
+
+        <!-- Status Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8 fade-in" style="animation-delay:0.05s">
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+                <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Kimi CLI</div>
+                <div class="flex items-center gap-2">
+                    <span id="status-dot-cli" class="w-2.5 h-2.5 rounded-full bg-slate-300"></span>
+                    <span id="status-text-cli" class="font-medium">检测中...</span>
+                </div>
+                <div id="version-text" class="text-xs text-slate-400 mt-2">--</div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+                <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">登录状态</div>
+                <div class="flex items-center gap-2">
+                    <span id="status-dot-auth" class="w-2.5 h-2.5 rounded-full bg-slate-300"></span>
+                    <span id="status-text-auth" class="font-medium">检测中...</span>
+                </div>
+                <div id="user-text" class="text-xs text-slate-400 mt-2">--</div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+                <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">服务端口</div>
+                <div class="flex items-center gap-2">
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                    <span class="font-medium">运行中</span>
+                </div>
+                <div class="text-xs text-slate-400 mt-2" id="port-text">--</div>
+            </div>
+        </div>
+
+        <!-- Quick Config -->
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6 fade-in" style="animation-delay:0.1s">
+            <h2 class="text-lg font-semibold mb-4">🚀 快速接入</h2>
+            
+            <div class="flex gap-2 mb-4">
+                <button onclick="switchTab('python')" id="tab-python" class="tab-btn px-3 py-1.5 text-sm rounded-lg bg-indigo-50 text-indigo-700 font-medium border border-indigo-200">Python</button>
+                <button onclick="switchTab('cursor')" id="tab-cursor" class="tab-btn px-3 py-1.5 text-sm rounded-lg text-slate-600 hover:bg-slate-50 border border-transparent">Cursor</button>
+                <button onclick="switchTab('claude')" id="tab-claude" class="tab-btn px-3 py-1.5 text-sm rounded-lg text-slate-600 hover:bg-slate-50 border border-transparent">Claude</button>
+                <button onclick="switchTab('curl')" id="tab-curl" class="tab-btn px-3 py-1.5 text-sm rounded-lg text-slate-600 hover:bg-slate-50 border border-transparent">cURL</button>
+            </div>
+
+            <div id="panel-python" class="tab-panel">
+                <div class="relative">
+                    <pre class="code-block bg-slate-900 text-slate-100 rounded-lg p-4 text-sm overflow-x-auto"><code>from openai import OpenAI
+
+client = OpenAI(
+    api_key="dummy-key",
+    base_url="http://localhost:8000/v1",
+)
+
+resp = client.chat.completions.create(
+    model="kimi/k2.5",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(resp.choices[0].message.content)</code></pre>
+                    <button onclick="copyCode(this)" class="absolute top-3 right-3 px-2 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white transition">复制</button>
+                </div>
+            </div>
+
+            <div id="panel-cursor" class="tab-panel hidden">
+                <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 mb-3">
+                    在 Cursor Settings → Models 中添加自定义 OpenAI API Base URL：
+                </div>
+                <div class="relative">
+                    <pre class="code-block bg-slate-900 text-slate-100 rounded-lg p-4 text-sm overflow-x-auto"><code>Base URL: http://localhost:8000/v1
+API Key: dummy-key
+Model: kimi/k2.5</code></pre>
+                    <button onclick="copyCode(this)" class="absolute top-3 right-3 px-2 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white transition">复制</button>
+                </div>
+            </div>
+
+            <div id="panel-claude" class="tab-panel hidden">
+                <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800 mb-3">
+                    在 Claude Desktop Config 中设置本地 API 地址（需配合兼容层）。
+                </div>
+                <div class="relative">
+                    <pre class="code-block bg-slate-900 text-slate-100 rounded-lg p-4 text-sm overflow-x-auto"><code># 配置指向
+Base URL: http://localhost:8000/v1
+API Key: dummy-key
+Model: kimi/k2.5</code></pre>
+                    <button onclick="copyCode(this)" class="absolute top-3 right-3 px-2 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white transition">复制</button>
+                </div>
+            </div>
+
+            <div id="panel-curl" class="tab-panel hidden">
+                <div class="relative">
+                    <pre class="code-block bg-slate-900 text-slate-100 rounded-lg p-4 text-sm overflow-x-auto"><code>curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer dummy-key" \
+  -d '{
+    "model": "kimi/k2.5",
+    "messages": [{"role": "user", "content": "你好"}]
+  }'</code></pre>
+                    <button onclick="copyCode(this)" class="absolute top-3 right-3 px-2 py-1 text-xs rounded bg-white/10 hover:bg-white/20 text-white transition">复制</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- One-click Test -->
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6 fade-in" style="animation-delay:0.15s">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold">🧪 一键测试</h2>
+                <button id="test-btn" onclick="runTest()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed">
+                    发送测试请求
+                </button>
+            </div>
+            <div id="test-loading" class="hidden text-sm text-slate-500 mb-3">请求中，请稍候...</div>
+            <div id="test-error" class="hidden mb-3 p-3 rounded-lg bg-rose-50 text-rose-700 text-sm border border-rose-200"></div>
+            <div id="test-result" class="hidden">
+                <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Kimi 回复</div>
+                <div class="bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm leading-relaxed whitespace-pre-wrap" id="test-content"></div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="text-center text-xs text-slate-400 fade-in" style="animation-delay:0.2s">
+            <p>API 文档: <a href="/docs" class="text-indigo-600 hover:underline">/docs</a> · 健康检查: <a href="/health" class="text-indigo-600 hover:underline">/health</a></p>
+            <p class="mt-1">Kimi2Moon — 本地 OpenAI 兼容代理</p>
+        </div>
+    </div>
+
+    <script>
+        const currentPort = location.port || (location.protocol === 'https:' ? '443' : '80');
+        document.getElementById('port-text').textContent = `http://localhost:${currentPort}`;
+
+        async function loadHealth() {
+            try {
+                const res = await fetch('/health');
+                const data = await res.json();
+                
+                const cliOk = data.kimi_cli_available;
+                const authOk = data.kimi_authenticated;
+                
+                setStatus('cli', cliOk ? 'success' : 'error', cliOk ? '已就绪' : '未找到');
+                setStatus('auth', authOk ? 'success' : 'warning', authOk ? '已登录' : '未登录');
+                
+                document.getElementById('version-text').textContent = cliOk ? (data.kimi_cli_version || '--') : '请安装 Kimi CLI';
+                document.getElementById('user-text').textContent = authOk ? (data.kimi_user || '已认证') : '请运行 kimi --login';
+                
+                document.getElementById('test-btn').disabled = !(cliOk && authOk);
+            } catch (e) {
+                setStatus('cli', 'error', '检测失败');
+                setStatus('auth', 'error', '检测失败');
+            }
+        }
+
+        function setStatus(key, type, text) {
+            const dot = document.getElementById(`status-dot-${key}`);
+            const label = document.getElementById(`status-text-${key}`);
+            label.textContent = text;
+            dot.className = 'w-2.5 h-2.5 rounded-full ' + (
+                type === 'success' ? 'bg-emerald-500' :
+                type === 'warning' ? 'bg-amber-500' :
+                'bg-rose-500'
+            );
+        }
+
+        function switchTab(id) {
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('bg-indigo-50', 'text-indigo-700', 'border-indigo-200');
+                btn.classList.add('text-slate-600', 'border-transparent');
+            });
+            document.getElementById(`tab-${id}`).classList.add('bg-indigo-50', 'text-indigo-700', 'border-indigo-200');
+            document.getElementById(`tab-${id}`).classList.remove('text-slate-600', 'border-transparent');
+
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+            document.getElementById(`panel-${id}`).classList.remove('hidden');
+        }
+
+        function copyCode(btn) {
+            const code = btn.parentElement.querySelector('code').innerText;
+            navigator.clipboard.writeText(code).then(() => {
+                const old = btn.innerText;
+                btn.innerText = '已复制';
+                setTimeout(() => btn.innerText = old, 1200);
+            });
+        }
+
+        async function runTest() {
+            const btn = document.getElementById('test-btn');
+            const loading = document.getElementById('test-loading');
+            const error = document.getElementById('test-error');
+            const result = document.getElementById('test-result');
+            const content = document.getElementById('test-content');
+            
+            btn.disabled = true;
+            loading.classList.remove('hidden');
+            error.classList.add('hidden');
+            result.classList.add('hidden');
+            
+            try {
+                const res = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer dummy-key'
+                    },
+                    body: JSON.stringify({
+                        model: 'kimi/k2.5',
+                        messages: [{role: 'user', content: '你好，简单介绍一下你自己'}]
+                    })
+                });
+                
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail?.message || `HTTP ${res.status}`);
+                }
+                
+                const data = await res.json();
+                content.textContent = data.choices?.[0]?.message?.content || '(无内容)';
+                result.classList.remove('hidden');
+            } catch (e) {
+                error.textContent = '请求失败: ' + e.message;
+                error.classList.remove('hidden');
+            } finally {
+                loading.classList.add('hidden');
+                btn.disabled = false;
+            }
+        }
+
+        loadHealth();
+    </script>
+</body>
+</html>
