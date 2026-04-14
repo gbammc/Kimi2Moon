@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 from .cli_wrapper import kimi_cli
+from . import __version__
 
 
 # ============== 日志设置 ==============
@@ -183,7 +184,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Kimi2Moon (CLI)",
     description="通过 CLI 调用 Kimi Code 的 OpenAI 兼容代理",
-    version="2.1.0",
+    version=__version__,
     lifespan=lifespan
 )
 
@@ -230,7 +231,7 @@ async def root():
     # fallback
     return {
         "name": "Kimi2Moon (CLI)",
-        "version": "2.1.0",
+        "version": __version__,
         "description": "通过 CLI 调用 Kimi Code 的 OpenAI 兼容代理",
         "note": "此代理通过调用 kimi CLI 命令使用 Kimi Code",
         "endpoints": {
@@ -248,7 +249,7 @@ async def api_info():
     """服务信息 JSON"""
     return {
         "name": "Kimi2Moon (CLI)",
-        "version": "2.1.0",
+        "version": __version__,
         "description": "通过 CLI 调用 Kimi Code 的 OpenAI 兼容代理",
         "endpoints": {
             "models": "/v1/models",
